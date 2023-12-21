@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+* Upgraded to embedded-hal v1.0.0-rc.3
+
+* pwm: Renamed `get_max_duty` -> `max_duty_cycle`; `set_duty` -> `set_duty_cycle`
+* pwm: `enable` method now returns type `Result<(), PwmError>`
+
 ## [v0.15.1] 2023-11-03
 
 * Bugfix, usb: On RM0455 and RM0468 parts, PA11/PA12 do not have an alternate function
