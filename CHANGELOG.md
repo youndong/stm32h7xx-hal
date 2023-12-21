@@ -4,6 +4,8 @@
 
 * Upgraded to embedded-hal v1.0.0-rc.3
 
+* delay: `delay_ms` and 'delay_us` methods now require importing: `use embedded_hal::delay::DelayNs;`
+
 * pwm: Renamed `get_max_duty` -> `max_duty_cycle`; `set_duty` -> `set_duty_cycle`
 * pwm: `enable` method now returns type `Result<(), PwmError>`
 

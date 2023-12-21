@@ -8,10 +8,9 @@
 // TODO: on the h7x3 at least, only TIM2, TIM3, TIM4, TIM5 can support 32 bits.
 // TIM1 is 16 bit.
 
+use core::convert::Infallible;
 use core::convert::TryFrom;
 use core::marker::PhantomData;
-
-use crate::hal::timer::{CountDown, Periodic};
 
 use crate::stm32::{lptim1, lptim3};
 use crate::stm32::{LPTIM1, LPTIM2, LPTIM3};
@@ -280,12 +279,9 @@ pub enum Event {
 macro_rules! hal {
     ($($TIMX:ident: ($timX:ident, $Rec:ident, $cntType:ty),)+) => {
         $(
-            impl Periodic for Timer<$TIMX> {}
-
-            impl CountDown for Timer<$TIMX> {
-                type Time = Hertz;
-
-                fn start<T>(&mut self, timeout: T)
+            impl Timer<$TIMX> {
+                /// Starts a new count down
+                pub fn start<T>(&mut self, timeout: T) -> Result<(), Infallible>
                 where
                     T: Into<Hertz>,
                 {
@@ -307,10 +303,12 @@ macro_rules! hal {
                     self.apply_freq();
 
                     // Start counter
-                    self.resume()
+                    self.resume();
+                    Ok(())
                 }
 
-                fn wait(&mut self) -> nb::Result<(), Void> {
+                /// Non-blockingly “waits” until the count down finishes
+                pub fn wait(&mut self) -> nb::Result<(), Infallible> {
                     if self.is_irq_clear() {
                         Err(nb::Error::WouldBlock)
                     } else {
@@ -327,7 +325,7 @@ macro_rules! hal {
                             prec: Self::Rec, clocks: &CoreClocks
                 ) -> Timer<$TIMX> {
                     let mut timer = Timer::$timX(self, prec, clocks);
-                    timer.start(timeout);
+                    timer.start(timeout).unwrap();
                     timer
                 }
 
@@ -595,12 +593,8 @@ hal! {
 macro_rules! lptim_hal {
     ($($TIMX:ident: ($timx:ident, $Rec:ident, $timXpac:ident),)+) => {
         $(
-            impl Periodic for LpTimer<$TIMX, Enabled> {}
-
-            impl CountDown for LpTimer<$TIMX, Enabled> {
-                type Time = Hertz;
-
-                fn start<T>(&mut self, timeout: T)
+            impl LpTimer<$TIMX, Enabled> {
+                pub fn start<T>(&mut self, timeout: T)
                 where
                     T: Into<Hertz>,
                 {
@@ -621,7 +615,7 @@ macro_rules! lptim_hal {
                     self.tim.cr.write(|w| w.cntstrt().set_bit().enable().enabled());
                 }
 
-                fn wait(&mut self) -> nb::Result<(), Void> {
+                pub fn wait(&mut self) -> nb::Result<(), Void> {
                     if self.tim.isr.read().arrm().bit_is_clear() {
                         Err(nb::Error::WouldBlock)
                     } else {

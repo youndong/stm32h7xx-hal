@@ -38,19 +38,12 @@
 //!
 //! - [Blinky](https://github.com/stm32-rs/stm32h7xx-hal/blob/master/examples/blinky.rs)
 
-use cast::u32;
 use cortex_m::peripheral::syst::SystClkSource;
 use cortex_m::peripheral::SYST;
-use embedded_hal::{
-    blocking::delay::{DelayMs, DelayUs},
-    timer::CountDown,
-};
+use embedded_hal::delay::DelayNs;
 use void::Void;
 
-use crate::nb::block;
 use crate::rcc::CoreClocks;
-use crate::time::Hertz;
-use fugit::RateExtU32;
 
 pub trait DelayExt {
     fn delay(self, clocks: CoreClocks) -> Delay;
@@ -68,7 +61,7 @@ pub struct Delay {
     syst: SYST,
 }
 
-/// Implements [CountDown](embedded_hal::timer::CountDown) for the System timer (SysTick).
+/// Countdown for the System timer (SysTick).
 pub struct Countdown<'a> {
     clocks: CoreClocks,
     syst: &'a mut SYST,
@@ -77,7 +70,7 @@ pub struct Countdown<'a> {
 }
 
 impl<'a> Countdown<'a> {
-    /// Create a new [CountDown] measured in microseconds.
+    /// Create a new [Countdown] measured in microseconds.
     pub fn new(syst: &'a mut SYST, clocks: CoreClocks) -> Self {
         Self {
             syst,
@@ -111,12 +104,11 @@ impl<'a> Countdown<'a> {
     }
 }
 
-impl<'a> CountDown for Countdown<'a> {
-    type Time = fugit::MicrosDurationU32;
-
-    fn start<T>(&mut self, count: T)
+impl<'a> Countdown<'a> {
+    /// Starts a new count down
+    pub fn start<T>(&mut self, count: T)
     where
-        T: Into<Self::Time>,
+        T: Into<fugit::MicrosDurationU32>,
     {
         let us = count.into().ticks();
 
@@ -136,7 +128,8 @@ impl<'a> CountDown for Countdown<'a> {
         self.start_wait();
     }
 
-    fn wait(&mut self) -> nb::Result<(), Void> {
+    /// Non-blockingly “waits” until the count down finishes
+    pub fn wait(&mut self) -> nb::Result<(), Void> {
         if self.finished {
             return Ok(());
         }
@@ -164,41 +157,11 @@ impl Delay {
     }
 }
 
-impl DelayMs<u32> for Delay {
-    fn delay_ms(&mut self, ms: u32) {
-        self.delay_us(ms * 1_000);
-    }
-}
-
-impl DelayMs<u16> for Delay {
-    fn delay_ms(&mut self, ms: u16) {
-        self.delay_ms(u32(ms));
-    }
-}
-
-impl DelayMs<u8> for Delay {
-    fn delay_ms(&mut self, ms: u8) {
-        self.delay_ms(u32(ms));
-    }
-}
-
-impl DelayUs<u32> for Delay {
-    fn delay_us(&mut self, us: u32) {
+impl Delay {
+    /// Internal method to delay cycles with systick
+    fn systick_delay_cycles(&mut self, mut total_rvr: u64) {
         // The SysTick Reload Value register supports values between 1 and 0x00FFFFFF.
         const MAX_RVR: u32 = 0x00FF_FFFF;
-
-        // With c_ck up to 480e6, we need u64 for delays > 8.9s
-
-        let mut total_rvr = if cfg!(not(feature = "revision_v")) {
-            // See errata ES0392 §2.2.3. Revision Y does not have the /8 divider
-            u64::from(us) * u64::from(self.clocks.c_ck().raw() / 1_000_000)
-        } else if cfg!(feature = "cm4") {
-            // CM4 derived from HCLK
-            u64::from(us) * u64::from(self.clocks.hclk().raw() / 8_000_000)
-        } else {
-            // Normally divide by 8
-            u64::from(us) * u64::from(self.clocks.c_ck().raw() / 8_000_000)
-        };
 
         while total_rvr != 0 {
             let current_rvr = if total_rvr <= MAX_RVR.into() {
@@ -219,90 +182,32 @@ impl DelayUs<u32> for Delay {
             self.syst.disable_counter();
         }
     }
-}
-
-impl DelayUs<u16> for Delay {
-    fn delay_us(&mut self, us: u16) {
-        self.delay_us(u32(us))
+    /// Internal method that returns the clock frequency of systick
+    fn systick_clock(&self) -> u64 {
+        if cfg!(not(feature = "revision_v")) {
+            // See errata ES0392 §2.2.3. Revision Y does not have the /8 divider
+            u64::from(self.clocks.c_ck().raw())
+        } else if cfg!(feature = "cm4") {
+            // CM4 derived from HCLK
+            u64::from(self.clocks.hclk().raw() / 8)
+        } else {
+            // Normally divide by 8
+            u64::from(self.clocks.c_ck().raw() / 8)
+        }
     }
 }
 
-impl DelayUs<u8> for Delay {
-    fn delay_us(&mut self, us: u8) {
-        self.delay_us(u32(us))
+impl DelayNs for Delay {
+    fn delay_ns(&mut self, ns: u32) {
+        // With c_ck up to 480e6, 1 cycle is always > 2ns
+
+        self.systick_delay_cycles(u64::from(ns + 1) / 2);
     }
-}
+    fn delay_us(&mut self, us: u32) {
+        // With c_ck up to 480e6, we need u64 for delays > 8.9s
 
-/// CountDown Timer as a delay provider
-pub struct DelayFromCountDownTimer<T>(T);
-
-impl<T> DelayFromCountDownTimer<T> {
-    /// Creates delay provider from a CountDown timer
-    pub fn new(timer: T) -> Self {
-        Self(timer)
+        let total_rvr =
+            u64::from(us) * ((self.systick_clock() + 999_999) / 1_000_000);
+        self.systick_delay_cycles(total_rvr);
     }
-
-    /// Releases the Timer
-    pub fn free(self) -> T {
-        self.0
-    }
-}
-
-macro_rules! impl_delay_from_count_down_timer  {
-    ($(($Delay:ident, $delay:ident, $num:expr)),+) => {
-        $(
-
-            impl<T> $Delay<u32> for DelayFromCountDownTimer<T>
-            where
-                T: CountDown<Time = Hertz>,
-            {
-                fn $delay(&mut self, t: u32) {
-                    let mut time_left = t;
-
-                    // Due to the LpTimer having only a 3 bit scaler, it is
-                    // possible that the max timeout we can set is
-                    // (128 * 65536) / clk_hz milliseconds.
-                    // Assuming the fastest clk_hz = 480Mhz this is roughly ~17ms,
-                    // or a frequency of ~57.2Hz. We use a 60Hz frequency for each
-                    // loop step here to ensure that we stay within these bounds.
-                    let looping_delay = $num / 60;
-                    let looping_delay_hz = Hertz::from_raw($num / looping_delay);
-
-                    self.0.start(looping_delay_hz);
-                    while time_left > looping_delay {
-                        block!(self.0.wait()).ok();
-                        time_left -= looping_delay;
-                    }
-
-                    if time_left > 0 {
-                        self.0.start(($num / time_left).Hz());
-                        block!(self.0.wait()).ok();
-                    }
-                }
-            }
-
-            impl<T> $Delay<u16> for DelayFromCountDownTimer<T>
-            where
-                T: CountDown<Time = Hertz>,
-            {
-                fn $delay(&mut self, t: u16) {
-                    self.$delay(t as u32);
-                }
-            }
-
-            impl<T> $Delay<u8> for DelayFromCountDownTimer<T>
-            where
-                T: CountDown<Time = Hertz>,
-            {
-                fn $delay(&mut self, t: u8) {
-                    self.$delay(t as u32);
-                }
-            }
-        )+
-    }
-}
-
-impl_delay_from_count_down_timer! {
-    (DelayMs, delay_ms, 1_000),
-    (DelayUs, delay_us, 1_000_000)
 }
