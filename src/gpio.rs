@@ -75,9 +75,9 @@ mod exti;
 pub use exti::ExtiPin;
 mod dynamic;
 pub use dynamic::{Dynamic, DynamicPin};
-mod hal_02;
+mod hal_1;
 
-pub use embedded_hal::digital::v2::PinState;
+pub use embedded_hal::digital::PinState;
 
 use core::fmt;
 
@@ -458,7 +458,6 @@ impl<const P: char, const N: u8, MODE> Pin<P, N, Output<MODE>> {
     pub fn set_low(&mut self) {
         self._set_low()
     }
-
     /// Is the pin in drive high or low mode?
     #[inline(always)]
     pub fn get_state(&self) -> PinState {
