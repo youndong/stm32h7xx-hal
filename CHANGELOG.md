@@ -6,6 +6,8 @@
 
 * delay: `delay_ms` and 'delay_us` methods now require importing: `use embedded_hal::delay::DelayNs;`
 
+* fmc: Upgrade to `stm32-fmc` v0.4 to support embedded-hal v1.0
+
 * pwm: Renamed `get_max_duty` -> `max_duty_cycle`; `set_duty` -> `set_duty_cycle`
 * pwm: `enable` method now returns type `Result<(), PwmError>`
 * pwm: LPTIMs can return a `NotEnabled` error from `set_duty_cycle`
