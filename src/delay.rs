@@ -43,7 +43,17 @@ use cortex_m::peripheral::SYST;
 use embedded_hal::delay::DelayNs;
 use void::Void;
 
+use crate::block;
 use crate::rcc::CoreClocks;
+use crate::stm32::{LPTIM1, LPTIM2, LPTIM3};
+#[cfg(not(feature = "rm0455"))]
+use crate::stm32::{LPTIM4, LPTIM5};
+use crate::stm32::{
+    TIM1, TIM12, TIM13, TIM14, TIM15, TIM16, TIM17, TIM2, TIM3, TIM4, TIM5,
+    TIM6, TIM7, TIM8,
+};
+use crate::time::Hertz;
+use crate::timer::{Enabled, LpTimer, Timer};
 
 pub trait DelayExt {
     fn delay(self, clocks: CoreClocks) -> Delay;
@@ -210,4 +220,76 @@ impl DelayNs for Delay {
             u64::from(us) * ((self.systick_clock() + 999_999) / 1_000_000);
         self.systick_delay_cycles(total_rvr);
     }
+}
+
+/// Delay that implements [embedded_hal::blocking::delay] traits
+pub struct DelayFromCountDownTimer<TIM>(TIM);
+
+impl<TIM> DelayFromCountDownTimer<TIM> {
+    /// Creates a delay from a timer resource
+    pub fn new(timer: TIM) -> Self {
+        Self(timer)
+    }
+    /// Free the timer resource for other uses
+    pub fn free(self) -> TIM {
+        self.0
+    }
+}
+
+macro_rules! impl_delay_from_count_down_timer  {
+    ($($TIMX:ty),+) => {
+        $(
+            impl DelayFromCountDownTimer<$TIMX>
+            {
+                fn delay_us_internal(&mut self, t: u32) {
+                    let mut time_left = t;
+
+                    // Due to the LpTimer having only a 3 bit scaler, it is
+                    // possible that the max timeout we can set is
+                    // (128 * 65536) / clk_hz milliseconds.
+                    // Assuming the fastest clk_hz = 480Mhz this is roughly ~17ms,
+                    // or a frequency of ~57.2Hz. We use a 60Hz frequency for each
+                    // loop step here to ensure that we stay within these bounds.
+                    let looping_delay = 1_000_000 / 60;
+                    let looping_delay_hz = Hertz::from_raw(1_000_000 / looping_delay);
+
+                    let _ = self.0.start(looping_delay_hz); // This method is infallible
+                    while time_left > looping_delay {
+                        block!(self.0.wait()).ok();
+                        time_left -= looping_delay;
+                    }
+
+                    if time_left > 0 {
+                        // This method is infallible
+                        let _ = self.0.start(Hertz::from_raw(1_000_000 / time_left));
+                        block!(self.0.wait()).ok();
+                    }
+                }
+            }
+
+            impl DelayNs for DelayFromCountDownTimer<$TIMX> {
+                fn delay_ns(&mut self, ns: u32) {
+                    // TODO(): This delay is 1000x longer than the intended duration!
+                    self.delay_us_internal(ns);
+                }
+                fn delay_us(&mut self, us: u32) {
+                    self.delay_us_internal(us);
+                }
+            }
+        )+
+    }
+}
+
+impl_delay_from_count_down_timer! {
+    Timer<TIM1>, Timer<TIM8>,
+    Timer<TIM2>, Timer<TIM3>, Timer<TIM4>,
+    Timer<TIM5>, Timer<TIM6>, Timer<TIM7>,
+    Timer<TIM12>, Timer<TIM13>, Timer<TIM14>, Timer<TIM15>, Timer<TIM16>, Timer<TIM17>
+}
+impl_delay_from_count_down_timer! {
+    LpTimer<LPTIM1, Enabled>, LpTimer<LPTIM2, Enabled>, LpTimer<LPTIM3, Enabled>
+}
+#[cfg(not(feature = "rm0455"))]
+impl_delay_from_count_down_timer! {
+    LpTimer<LPTIM4, Enabled>, LpTimer<LPTIM5, Enabled>
 }
